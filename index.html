@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Regnbågskatten</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#bfe6ff;font-family:'Baloo 2',system-ui,sans-serif}
+  canvas{display:block}
+  #hud{position:fixed;top:16px;left:50%;transform:translateX(-50%);display:flex;gap:14px;align-items:center;
+    background:rgba(255,255,255,.88);padding:6px 22px;border-radius:16px;font-size:30px;font-weight:800;color:#6a3fa0;
+    box-shadow:0 6px 20px rgba(0,0,0,.12);user-select:none;white-space:nowrap}
+  #dots{display:flex;gap:6px}
+  #dots span{width:24px;height:24px;border-radius:50%;background:#e4e4e4;transition:transform .35s cubic-bezier(.3,1.8,.5,1)}
+  #dots.balloons span.got{background:linear-gradient(135deg,#ff7eb6 50%,#5ab0ff 50%);transform:scale(1.25)}
+  #dots.lamps span.got{background:radial-gradient(circle,#ffe27a 0 45%,#e0301e 46%);transform:scale(1.25)}
+  #dots.balls span.got{background:radial-gradient(circle at 35% 35%,#fff 0 18%,#ff5a5a 19% 60%,#3ba7ff 61%);transform:scale(1.25)}
+  #dots span.got{background:conic-gradient(#ff3b3b,#ff9a2e,#ffe53b,#4cd964,#3ba7ff,#5a5cff,#b05cff,#ff3b3b);transform:scale(1.25)}
+  #help{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,.85);padding:6px 18px;
+    border-radius:14px;font-size:18px;color:#444;font-weight:600;transition:opacity 1.5s;user-select:none;text-align:center;max-width:calc(100% - 32px)}
+  #toast{position:fixed;top:84px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,.92);padding:6px 22px;border-radius:16px;
+    font-size:28px;font-weight:800;color:#d4462e;opacity:0;transition:opacity .4s;pointer-events:none;white-space:nowrap}
+  #win{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(255,255,255,.3)}
+  #win h1{font-size:clamp(36px,7vw,72px);margin:0 16px;color:#fff;text-align:center;line-height:1.1;
+    text-shadow:0 4px 0 #b06ad8,0 10px 24px rgba(0,0,0,.25)}
+  #win button{margin-top:24px;font:inherit;font-size:30px;font-weight:800;padding:8px 34px;border:none;border-radius:18px;
+    background:#ff7eb6;color:#fff;cursor:pointer;box-shadow:0 6px 0 #d45490}
+  #win button:active{transform:translateY(4px);box-shadow:0 2px 0 #d45490}
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="hud"><span id="label">Bana 1: Regnbågar</span><div id="dots"></div></div>
+<div id="help">Pilarna styr katten. Klicka i gräset så springer den dit. Mellanslag hoppar och jamar.</div>
+<div id="toast"></div>
+<div id="win"><h1 id="winText">Hurra!</h1><button id="again">Spela igen</button></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+const COUNT = 7;          // antal regnbågar att hitta
+const FIELD = 40;         // hur långt katten får gå
+const RB = [0xff3b3b, 0xff9a2e, 0xffe53b, 0x4cd964, 0x3ba7ff, 0x5a5cff, 0xb05cff];
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// ---------- renderare, scen, kamera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const FOG = new THREE.Color(0xc4e8ff);
+scene.fog = new THREE.Fog(FOG, 35, 110);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 500);
+
+// himmel
+const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  uniforms: { top: { value: new THREE.Color(0x3d9bff) }, bottom: { value: FOG } },
+  vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: `uniform vec3 top, bottom; varying vec3 vP;
+    void main(){ float h = clamp(vP.y * 1.5, 0., 1.); gl_FragColor = vec4(mix(bottom, top, pow(h, .6)), 1.);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    }`
+}));
+sky.renderOrder = -1;
+scene.add(sky);
+
+// ljus
+const hemi = new THREE.HemisphereLight(0xd6eeff, 0x4a7a2a, 1.3);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 18, bottom: -18, near: 1, far: 90 });
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+
+// ---------- mark och gräs ----------
+const ground = new THREE.Mesh(new THREE.CircleGeometry(200, 64), new THREE.MeshStandardMaterial({ color: 0x3f8a26, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const bladeGeo = new THREE.PlaneGeometry(0.09, 0.7, 1, 4);
+bladeGeo.translate(0, 0.35, 0);
+{ const p = bladeGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setX(i, p.getX(i) * (1 - (p.getY(i) / 0.7) * 0.85)); }
+
+const grassU = {
+  uTime: { value: 0 }, uCat: { value: new THREE.Vector3() }, uLight: { value: 1 },
+  uHoles: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
+  uFogColor: { value: FOG }, uFogNear: { value: 35 }, uFogFar: { value: 110 }
+};
+const grassMat = new THREE.ShaderMaterial({
+  uniforms: grassU, side: THREE.DoubleSide,
+  vertexShader: `
+    uniform float uTime; uniform vec3 uCat; uniform vec3 uHoles[8];
+    attribute float aShade;
+    varying float vH; varying float vShade; varying float vDepth;
+    void main(){
+      vH = uv.y; vShade = aShade;
+      vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.);
+      float k = vH * vH;
+      float s = sin(uTime*1.7 + w.x*.3 + w.z*.2)*.22 + sin(uTime*3.1 + w.x*1.3 + w.z*.7)*.06;
+      w.x += s*k; w.z += s*.4*k;
+      vec2 d = w.xz - uCat.xz; float dl = length(d) + 1e-4;
+      float p = smoothstep(1.4, .2, dl) * k;
+      w.xz += d/dl * p * .7; w.y -= p * .25;
+      vec3 b0 = (modelMatrix * instanceMatrix * vec4(0., 0., 0., 1.)).xyz;
+      for (int i = 0; i < 8; i++) { vec3 h = uHoles[i]; if (h.z > 0. && distance(b0.xz, h.xy) < h.z + .2) w.y = -10.; }
+      vec4 mv = viewMatrix * w; vDepth = -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform vec3 uFogColor; uniform float uFogNear, uFogFar, uLight;
+    varying float vH; varying float vShade; varying float vDepth;
+    void main(){
+      vec3 base = vec3(.05, .20, .02);
+      vec3 tip = mix(vec3(.30, .65, .08), vec3(.62, .80, .14), vShade);
+      vec3 c = mix(base, tip, vH) * uLight;
+      gl_FragColor = vec4(mix(c, uFogColor, smoothstep(uFogNear, uFogFar, vDepth)), 1.);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`
+});
+{
+  const N = 70000;
+  const grass = new THREE.InstancedMesh(bladeGeo, grassMat, N);
+  const shade = new Float32Array(N);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < N; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * 62;
+    p.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+    q.setFromAxisAngle(up, Math.random() * Math.PI);
+    const h = rand(0.7, 1.5); s.set(rand(0.8, 1.3), h, 1);
+    grass.setMatrixAt(i, m.compose(p, q, s));
+    shade[i] = Math.random();
+  }
+  grass.geometry.setAttribute('aShade', new THREE.InstancedBufferAttribute(shade, 1));
+  grass.frustumCulled = false;
+  scene.add(grass);
+}
+
+// blommor
+let flowerMesh; const flowerPos = [];
+{
+  const cols = [0xffffff, 0xffe14d, 0xff8fc7, 0xc58cff, 0xff6b6b].map(c => new THREE.Color(c));
+  const n = 800;
+  const fl = new THREE.InstancedMesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshStandardMaterial({ roughness: .6 }), n);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * 55;
+    const fp = new THREE.Vector3(Math.cos(a) * r, rand(0.45, 0.65), Math.sin(a) * r); flowerPos.push(fp);
+    m.makeTranslation(fp.x, fp.y, fp.z);
+    fl.setMatrixAt(i, m);
+    fl.setColorAt(i, cols[(Math.random() * cols.length) | 0]);
+  }
+  scene.add(fl); flowerMesh = fl;
+}
+
+// träd runt ängen och buskar att gömma sig bakom
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a4b2a, roughness: 1 });
+const leafMats = [0x2f7d32, 0x3b9440, 0x4aa84a].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: .9 }));
+function tree(x, z, s) {
+  const g = new THREE.Group();
+  const t = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, 2.2, 8), trunkMat);
+  t.position.y = 1.1; t.castShadow = true; g.add(t);
+  for (let i = 0; i < 4; i++) {
+    const b = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(1, 1.5), 1), leafMats[i % 3]);
+    b.position.set(rand(-.7, .7), rand(2.6, 3.6), rand(-.7, .7));
+    b.castShadow = true; g.add(b);
+  }
+  g.position.set(x, 0, z); g.scale.setScalar(s); scene.add(g);
+}
+for (let i = 0; i < 60; i++) { const a = Math.random() * Math.PI * 2, r = rand(46, 80); tree(Math.cos(a) * r, Math.sin(a) * r, rand(1, 1.8)); }
+const bushPos = [];
+for (let i = 0; i < 16; i++) {
+  const a = Math.random() * Math.PI * 2, r = rand(8, 38);
+  const g = new THREE.Group();
+  for (let j = 0; j < 3; j++) {
+    const b = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(.6, .9), 1), leafMats[j]);
+    b.position.set(rand(-.6, .6), .5, rand(-.6, .6)); b.castShadow = true; g.add(b);
+  }
+  g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); scene.add(g); bushPos.push(g.position);
+}
+
+// moln
+const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, emissive: 0xffffff, emissiveIntensity: .25 });
+const clouds = [];
+for (let i = 0; i < 14; i++) {
+  const g = new THREE.Group();
+  for (let j = 0; j < 5; j++) {
+    const b = new THREE.Mesh(new THREE.SphereGeometry(rand(2, 3.5), 12, 10), cloudMat);
+    b.position.set(j * 2.2 - 4.4, rand(-.5, .8), rand(-1, 1)); g.add(b);
+  }
+  g.position.set(rand(-120, 120), rand(28, 45), rand(-120, 120));
+  scene.add(g); clouds.push(g);
+}
+
+// ---------- regnbågskatten ----------
+const catU = { uMode: { value: 0 }, uTime: { value: 0 }, uCat: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3(0, 0, 1) } };
+function rainbowFur() {
+  const m = new THREE.MeshStandardMaterial({ roughness: .55 });
+  m.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, catU);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWorldP;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorldP = (modelMatrix * vec4(transformed, 1.)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vWorldP; uniform float uMode; uniform float uTime; uniform vec3 uCat; uniform vec3 uDir;
+        vec3 hash3(vec3 p){ p = vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6))); return fract(sin(p) * 43758.5453) * .8 + .1; }
+        vec3 hue(float h){ return clamp(abs(mod(h*6. + vec3(0.,4.,2.), 6.) - 3.) - 1., 0., 1.); }`)
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', `
+        vec3 rel = vWorldP - uCat;
+        float along = dot(rel, uDir);                // från svansen till nosen
+        float h = fract(-along * .45 + rel.y * .25 - uTime * .35);
+        vec3 rc = hue(h);
+        float st = smoothstep(.4, .6, .5 + .5 * sin((-along * 1.4 + rel.y * .6 - uTime * 1.2) * 3.14159));
+        vec3 pb = mix(vec3(1., .5, .78), vec3(.36, .66, 1.), st);
+        rc = mix(rc, pb, clamp(uMode, 0., 1.));
+        if (uMode > 1.5 && uMode < 2.5) {
+          vec3 side = normalize(cross(vec3(0., 1., 0.), uDir));
+          vec3 lp = vec3(dot(rel, side), rel.y, along) * 4.;
+          vec3 cell = floor(lp); float md = 9.;
+          for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+            vec3 cc = cell + vec3(x, y, z); md = min(md, length(lp - cc - hash3(cc)));
+          }
+          float ring = smoothstep(.2, .26, md) * (1. - smoothstep(.36, .42, md));
+          float mid = 1. - smoothstep(.18, .22, md);
+          vec3 gold = vec3(1., .74, .2) * (.9 + .2 * sin(uTime * 3. + along * 6. + rel.y * 4.));
+          rc = mix(gold, vec3(1., .5, .12), mid);
+          rc = mix(rc, vec3(.82, .06, .05), ring);
+        }
+        if (uMode > 2.5) {
+          vec3 side = normalize(cross(vec3(0., 1., 0.), uDir));
+          vec3 lp = vec3(dot(rel, side), rel.y, along) * 1.8;
+          vec3 cell = floor(lp); float md = 9.;
+          for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+            vec3 cc = cell + vec3(x, y, z); md = min(md, length(lp - cc - hash3(cc)));
+          }
+          rc = mix(vec3(1., .76, .08), vec3(.55, .27, .07), 1. - smoothstep(.3, .36, md));
+        }
+        rc = mix(rc, vec3(1.), .12);
+        vec4 diffuseColor = vec4(rc * rc, opacity);`);
+  };
+  return m;
+}
+
+function makeCat(kind = 'cat') {
+  const leo = kind === 'leo', dog = kind === 'dog';
+  const cat = new THREE.Group();
+  const fur = rainbowFur();
+  const cream = new THREE.MeshStandardMaterial({ color: 0xfff6ea, roughness: .9 });
+  const pink = new THREE.MeshStandardMaterial({ color: 0xff8fa8, roughness: .6 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x151515, roughness: .25 });
+  const brown = new THREE.MeshStandardMaterial({ color: 0x7a4420, roughness: .8 });
+  const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const add = (geo, mat, parent, x, y, z, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz);
+    m.castShadow = true; parent.add(m); return m;
+  };
+  const body = new THREE.Group(); cat.add(body);
+  if (dog) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .85, 0, .75, .66, 1.4);
+  else if (leo) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .85, 0, .72, .6, 1.6);
+  else add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .8, 0, .78, .68, 1.25);
+  add(new THREE.SphereGeometry(.25, 16, 12), cream, body, 0, .78, leo ? .6 : .42, .9, .9, .6);
+
+  const head = new THREE.Group(); head.position.set(0, dog ? 1.38 : 1.3, leo ? .92 : dog ? .8 : .62); if (leo) head.scale.setScalar(.9); body.add(head);
+  add(new THREE.SphereGeometry(.4, 28, 18), fur, head, 0, 0, 0, 1.05, .95, .95);
+  if (dog) {
+    add(new THREE.SphereGeometry(.2, 16, 12), cream, head, 0, -.12, .36, 1.05, .8, 1.5);
+    add(new THREE.SphereGeometry(.08, 12, 10), black, head, 0, -.04, .66, 1.2, .9, 1);
+    add(new THREE.SphereGeometry(.09, 12, 8), pink, head, 0, -.27, .5, .8, .25, 1.2);
+  } else {
+    add(new THREE.SphereGeometry(.17, 16, 12), cream, head, 0, -.12, .3, 1.3, .8, .8);
+    add(new THREE.SphereGeometry(.05, 10, 8), pink, head, 0, -.04, .42);
+  }
+  for (const sx of [-1, 1]) {
+    add(new THREE.SphereGeometry(.075, 12, 10), black, head, sx * .15, .07, .33);
+    add(new THREE.SphereGeometry(.025, 8, 6), white, head, sx * .15 + .025, .1, .4);
+    if (dog) {
+      const ear = add(new THREE.SphereGeometry(.17, 14, 10), brown, head, sx * .37, -.04, -.02, .45, 1.35, .9);
+      ear.rotation.z = sx * .3;
+    } else if (leo) {
+      add(new THREE.SphereGeometry(.13, 14, 10), fur, head, sx * .25, .3, -.02, 1, 1, .45);
+      add(new THREE.SphereGeometry(.07, 10, 8), pink, head, sx * .25, .3, .03, 1, 1, .3);
+    } else {
+      const ear = add(new THREE.ConeGeometry(.15, .32, 4), fur, head, sx * .21, .36, 0);
+      ear.rotation.set(0, Math.PI / 4, -sx * .35);
+      const inner = add(new THREE.ConeGeometry(.08, .2, 4), pink, head, sx * .2, .33, .06);
+      inner.rotation.set(0, Math.PI / 4, -sx * .35);
+    }
+  }
+  const wg = new THREE.BufferGeometry();
+  const wp = [];
+  for (const sx of [-1, 1]) for (const dy of [-.03, .03]) wp.push(sx * .12, -.1, .4, sx * .5, -.1 + dy * 3, .36);
+  wg.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3));
+  if (!dog) head.add(new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ color: 0xffffff })));
+
+  const legs = [];
+  for (const [x, z] of dog ? [[.22, .58], [-.22, .58], [.22, -.58], [-.22, -.58]] : leo ? [[.2, .68], [-.2, .68], [.2, -.68], [-.2, -.68]] : [[.22, .45], [-.22, .45], [.22, -.45], [-.22, -.45]]) {
+    const pivot = new THREE.Group(); pivot.position.set(x, .62, z); cat.add(pivot);
+    add(new THREE.CylinderGeometry(.1, .09, .5, 12), fur, pivot, 0, -.25, 0);
+    add(new THREE.SphereGeometry(.11, 12, 10), cream, pivot, 0, -.52, .03, 1, .7, 1.2);
+    legs.push(pivot);
+  }
+  const tail = [];
+  const tl = leo ? 18 : dog ? 7 : 12;
+  for (let i = 0; i < tl; i++) tail.push(add(new THREE.SphereGeometry(leo ? .09 - i * .0015 : .1 - i * .003, 12, 10), fur, body, 0, 0, 0));
+  if (leo) cat.scale.setScalar(1.15);
+  scene.add(cat);
+  return { cat, body, head, legs, tail, leo, dog, kind };
+}
+let kitty = makeCat('cat');
+function setCharacter(kind) {
+  if (kitty.kind === kind) return;
+  const p = kitty.cat.position.clone();
+  scene.remove(kitty.cat);
+  kitty = makeCat(kind);
+  kitty.cat.position.copy(p);
+}
+
+// ---------- regnbågar ----------
+const rainbowGeos = RB.map((c, i) => new THREE.TorusGeometry(2.2 - i * .17, .09, 10, 64, Math.PI));
+const rainbowMats = RB.map(c => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: .6, roughness: .5 }));
+let rainbows = [];
+function makeRainbow(x, z) {
+  const g = new THREE.Group();
+  rainbowGeos.forEach((geo, i) => { const m = new THREE.Mesh(geo, rainbowMats[i]); m.castShadow = true; g.add(m); });
+  for (const sx of [-1, 1]) for (let j = 0; j < 4; j++) {
+    const b = new THREE.Mesh(new THREE.SphereGeometry(rand(.35, .5), 12, 10), cloudMat);
+    b.position.set(sx * 1.7 + rand(-.45, .45), rand(0, .35), rand(-.3, .3)); g.add(b);
+  }
+  g.position.set(x, 0, z);
+  g.userData = { baseRot: Math.random() * Math.PI, phase: Math.random() * 10, got: false, gotAt: 0 };
+  g.rotation.y = g.userData.baseRot;
+  scene.add(g);
+  return g;
+}
+const BALLOON = [0xff7eb6, 0x5ab0ff, 0xffd93b, 0xb05cff, 0x4cd964, 0xff5a5a, 0xff9a2e];
+const balloonGeo = new THREE.SphereGeometry(.55, 24, 18);
+const knotGeo = new THREE.ConeGeometry(.08, .14, 8);
+function makeBalloon(x, z, i) {
+  const g = new THREE.Group();
+  const col = BALLOON[i % BALLOON.length];
+  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: .25, metalness: .05, emissive: col, emissiveIntensity: .15 });
+  const b = new THREE.Mesh(balloonGeo, mat); b.scale.set(1, 1.2, 1); b.castShadow = true; g.add(b);
+  const shine = new THREE.Mesh(new THREE.SphereGeometry(.1, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .7 }));
+  shine.position.set(.2, .3, .42); shine.scale.set(1, 1.6, .5); g.add(shine);
+  const k = new THREE.Mesh(knotGeo, mat); k.position.y = -.68; k.rotation.x = Math.PI; g.add(k);
+  const sg = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 12 }, (_, j) => new THREE.Vector3(Math.sin(j * .9) * .06, -.72 - j * .14, 0)));
+  g.add(new THREE.Line(sg, new THREE.LineBasicMaterial({ color: 0xffffff })));
+  const baseY = rand(1.9, 2.6);
+  g.position.set(x, baseY, z);
+  g.userData = { kind: 'balloon', color: col, baseY, baseRot: 0, phase: Math.random() * 10, got: false, gotAt: 0 };
+  scene.add(g);
+  return g;
+}
+function glowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,220,140,1)'); g.addColorStop(.3, 'rgba(255,180,80,.5)'); g.addColorStop(1, 'rgba(255,150,50,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const glowMat = new THREE.SpriteMaterial({ map: glowTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
+const lampMetal = new THREE.MeshStandardMaterial({ color: 0x5a3a1c, roughness: .35, metalness: .6 });
+const lampGlass = new THREE.MeshStandardMaterial({ color: 0xfff0b8, emissive: 0xffc24a, emissiveIntensity: 2.4, roughness: .2 });
+function makeLamp(x, z) {
+  const g = new THREE.Group();
+  const part = (geo, mat, y) => { const m = new THREE.Mesh(geo, mat); m.position.y = y; m.castShadow = true; g.add(m); return m; };
+  part(new THREE.CylinderGeometry(.28, .32, .1, 14), lampMetal, .05);
+  part(new THREE.CylinderGeometry(.22, .22, .5, 14), lampGlass, .35);
+  part(new THREE.ConeGeometry(.33, .25, 14), lampMetal, .72);
+  const h = part(new THREE.TorusGeometry(.13, .025, 8, 20), lampMetal, .92);
+  for (const a of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(.025, .025, .5, 6), lampMetal);
+    bar.position.set(Math.cos(a) * .22, .35, Math.sin(a) * .22); g.add(bar);
+  }
+  const glow = new THREE.Sprite(glowMat); glow.position.y = .4; glow.scale.setScalar(2.4); g.add(glow);
+  const light = new THREE.PointLight(0xffb84d, 5, 9, 1.6); light.position.y = .45; g.add(light);
+  g.position.set(x, 0, z);
+  g.userData = { kind: 'lamp', light, baseRot: 0, phase: Math.random() * 10, got: false, gotAt: 0 };
+  scene.add(g);
+  return g;
+}
+let carried = [];
+const BALLCOL = [0xff4d4d, 0x3ba7ff, 0xffd93b, 0x4cd964, 0xff7eb6, 0xff9a2e, 0xb05cff];
+const ballGeo = new THREE.SphereGeometry(.38, 24, 16), ballStripe = new THREE.TorusGeometry(.38, .045, 8, 32);
+const stripeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .5 });
+function makeBall(x, z, i) {
+  const g = new THREE.Group(), col = BALLCOL[i % BALLCOL.length];
+  const b = new THREE.Mesh(ballGeo, new THREE.MeshStandardMaterial({ color: col, roughness: .35 })); b.castShadow = true; g.add(b);
+  const st = new THREE.Mesh(ballStripe, stripeMat); st.rotation.y = Math.PI / 2; g.add(st);
+  g.position.set(x, .38, z);
+  g.userData = { kind: 'ball', color: col, baseRot: Math.random() * 6, phase: Math.random() * 10, got: false, gotAt: 0 };
+  scene.add(g);
+  return g;
+}
+function holeTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, '#000'); g.addColorStop(.6, '#0d0703'); g.addColorStop(.9, '#3a2410'); g.addColorStop(1, '#5a3a1c');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const holeMat = new THREE.MeshBasicMaterial({ map: holeTexture() });
+const dirtMat = new THREE.MeshStandardMaterial({ color: 0x6b4424, roughness: 1 });
+let holes = [];
+function setHoles(n) {
+  holes.forEach(h => scene.remove(h.mesh));
+  holes = [];
+  let tries = 0;
+  while (holes.length < n && tries++ < 2000) {
+    const a = Math.random() * Math.PI * 2, d = rand(7, 36), r = rand(1.2, 1.7);
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    if (!holes.every(h => Math.hypot(h.x - x, h.z - z) > h.r + r + 4)) continue;
+    if (!bushPos.every(b => Math.hypot(b.x - x, b.z - z) > r + 2)) continue;
+    const g = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 40), holeMat); disc.rotation.x = -Math.PI / 2; disc.position.y = .03; g.add(disc);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(r, .2, 8, 40), dirtMat); rim.rotation.x = -Math.PI / 2; rim.scale.z = .5; rim.position.y = .02; rim.receiveShadow = true; g.add(rim);
+    g.position.set(x, 0, z); scene.add(g);
+    holes.push({ x, z, r, mesh: g });
+  }
+  grassU.uHoles.value.forEach((v, i) => holes[i] ? v.set(holes[i].x, holes[i].z, holes[i].r) : v.set(0, 0, 0));
+  const m = new THREE.Matrix4();
+  flowerPos.forEach((p, i) => {
+    const inHole = holes.some(h => Math.hypot(h.x - p.x, h.z - p.z) < h.r + .4);
+    flowerMesh.setMatrixAt(i, inHole ? m.makeScale(0, 0, 0) : m.makeTranslation(p.x, p.y, p.z));
+  });
+  flowerMesh.instanceMatrix.needsUpdate = true;
+}
+let falling = false, fallT = 0, fallHole = null, toastTimer;
+function toast(txt) {
+  const el = document.getElementById('toast');
+  el.textContent = txt; el.style.opacity = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.style.opacity = 0, 2200);
+}
+const ENV = {
+  day:  { top: 0x3d9bff, fog: 0xc4e8ff, sun: 2.6, sunCol: 0xfff1d6, hemi: 1.3, grass: 1, exp: 1.05 },
+  dusk: { top: 0x2b1f63, fog: 0xf0977a, sun: .8, sunCol: 0xff8a50, hemi: .5, grass: .5, exp: 1.1 },
+};
+function setEnv(e) {
+  sky.material.uniforms.top.value.set(e.top);
+  FOG.set(e.fog); scene.fog.color.set(e.fog);
+  sun.intensity = e.sun; sun.color.set(e.sunCol);
+  hemi.intensity = e.hemi;
+  grassU.uLight.value = e.grass;
+  renderer.toneMappingExposure = e.exp;
+}
+const LEVELS = [
+  { label: 'Bana 1: Regnbågar', make: (x, z) => makeRainbow(x, z), radius: 1.9, mode: 0, dots: '',
+    win: 'Bana 1 klar!<br>Katten hittade alla regnbågar!', button: 'Till bana 2' },
+  { label: 'Bana 2: Ballonger', make: (x, z, i) => makeBalloon(x, z, i), radius: 1.6, mode: 1, dots: 'balloons',
+    win: 'Bana 2 klar!<br>Katten hittade alla ballonger!', button: 'Till bana 3' },
+  { label: 'Bana 3: Lampor', make: (x, z) => makeLamp(x, z), radius: 1.4, mode: 2, dots: 'lamps', char: 'leo', env: 'dusk',
+    win: 'Bana 3 klar!<br>Leoparden plockade upp alla lampor!', button: 'Till bana 4' },
+  { label: 'Bana 4: Bollar', make: (x, z, i) => makeBall(x, z, i), radius: 1.3, mode: 3, dots: 'balls', char: 'dog', holes: 6,
+    win: 'Hurra!<br>Hunden hittade alla bollar!', button: 'Spela igen' },
+];
+let level = 0;
+function startLevel(n) {
+  level = n;
+  const L = LEVELS[level];
+  document.getElementById('label').textContent = L.label;
+  dots.className = L.dots;
+  catU.uMode.value = L.mode;
+  setCharacter(L.char || 'cat');
+  document.getElementById('help').textContent = {
+    cat: 'Pilarna styr katten. Klicka i gräset så springer den dit. Mellanslag hoppar och jamar.',
+    leo: 'Pilarna styr leoparden. Klicka i gräset så springer den dit. Mellanslag hoppar och ryter.',
+    dog: 'Pilarna styr hunden. Akta dig för hålen! Mellanslag hoppar över dem och skäller.',
+  }[L.char || 'cat'];
+  document.getElementById('help').style.opacity = 1;
+  setHoles(L.holes || 0);
+  falling = false;
+  setEnv(ENV[L.env || 'day']);
+  carried = [];
+  placeRainbows();
+}
+function placeRainbows() {
+  rainbows.forEach(r => scene.remove(r));
+  const pts = [];
+  while (pts.length < COUNT) {
+    const a = Math.random() * Math.PI * 2, r = rand(10, 36);
+    const p = new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r);
+    if (pts.every(q => q.distanceTo(p) > 9) && holes.every(h => Math.hypot(h.x - p.x, h.z - p.y) > h.r + 2.5)) pts.push(p);
+  }
+  rainbows = pts.map((p, i) => LEVELS[level].make(p.x, p.y, i));
+  found = 0; drawDots();
+}
+
+// ---------- glitterexplosioner ----------
+const bursts = [];
+function burst(pos, n = 160, cols = RB) {
+  const geo = new THREE.BufferGeometry();
+  const P = new Float32Array(n * 3), C = new Float32Array(n * 3), V = [];
+  const c = new THREE.Color();
+  for (let i = 0; i < n; i++) {
+    P.set([pos.x, pos.y, pos.z], i * 3);
+    c.setHex(cols[i % cols.length]); C.set([c.r, c.g, c.b], i * 3);
+    const v = new THREE.Vector3(rand(-1, 1), rand(0, 1.4), rand(-1, 1)).normalize().multiplyScalar(rand(3, 8));
+    V.push(v);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(C, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: .3, vertexColors: true, transparent: true, depthWrite: false }));
+  scene.add(pts);
+  bursts.push({ pts, V, life: 0 });
+}
+
+// ---------- ljud ----------
+let actx;
+const ac = () => { actx ??= new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); return actx; };
+function chime(notes = [523.25, 659.25, 783.99, 1046.5, 1318.5], gap = .08) {
+  const a = ac();
+  notes.forEach((f, i) => {
+    const o = a.createOscillator(), g = a.createGain(), t0 = a.currentTime + i * gap;
+    o.type = 'triangle'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.18, t0 + .01); g.gain.exponentialRampToValueAtTime(.001, t0 + .7);
+    o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + .75);
+  });
+}
+function pop() {
+  const a = ac(), t0 = a.currentTime, len = a.sampleRate * .15;
+  const buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4);
+  const src = a.createBufferSource(), g = a.createGain(), f = a.createBiquadFilter();
+  src.buffer = buf; f.type = 'lowpass'; f.frequency.value = 2500; g.gain.value = .9;
+  src.connect(f).connect(g).connect(a.destination); src.start(t0);
+  setTimeout(() => chime([783.99, 1046.5, 1318.5], .07), 90);
+}
+function roar() {
+  const a = ac(), t0 = a.currentTime, dur = 1.3;
+  const out = a.createGain(), lp = a.createBiquadFilter(), shaper = a.createWaveShaper();
+  const curve = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; curve[i] = Math.tanh(x * 4); }
+  shaper.curve = curve;
+  lp.type = 'lowpass'; lp.Q.value = 3;
+  lp.frequency.setValueAtTime(500, t0); lp.frequency.linearRampToValueAtTime(1600, t0 + .25); lp.frequency.exponentialRampToValueAtTime(300, t0 + dur);
+  out.gain.setValueAtTime(0, t0); out.gain.linearRampToValueAtTime(.5, t0 + .12); out.gain.linearRampToValueAtTime(.4, t0 + .7); out.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+  // morrande skakning i rösten
+  const trem = a.createGain(), lfo = a.createOscillator(), lfoAmt = a.createGain();
+  lfo.frequency.setValueAtTime(18, t0); lfo.frequency.linearRampToValueAtTime(30, t0 + dur);
+  lfoAmt.gain.value = .45; trem.gain.value = .6;
+  lfo.connect(lfoAmt).connect(trem.gain);
+  for (const [f0, f1, type] of [[150, 85, 'sawtooth'], [153, 88, 'sawtooth'], [75, 44, 'square']]) {
+    const o = a.createOscillator(); o.type = type;
+    o.frequency.setValueAtTime(f0 * .8, t0); o.frequency.linearRampToValueAtTime(f0, t0 + .15); o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    o.connect(trem); o.start(t0); o.stop(t0 + dur + .05);
+  }
+  const len = a.sampleRate * dur, buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const n = a.createBufferSource(), bp = a.createBiquadFilter(), ng = a.createGain();
+  n.buffer = buf; bp.type = 'bandpass'; bp.frequency.value = 450; bp.Q.value = 1.2; ng.gain.value = .5;
+  n.connect(bp).connect(ng).connect(trem); n.start(t0);
+  trem.connect(shaper).connect(lp).connect(out).connect(a.destination);
+  lfo.start(t0); lfo.stop(t0 + dur + .05);
+}
+function bark() {
+  const a = ac();
+  for (const d0 of [0, .24]) {
+    const t0 = a.currentTime + d0;
+    const o = a.createOscillator(), f = a.createBiquadFilter(), g = a.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(300, t0); o.frequency.linearRampToValueAtTime(460, t0 + .03); o.frequency.exponentialRampToValueAtTime(170, t0 + .16);
+    f.type = 'bandpass'; f.frequency.value = 850; f.Q.value = 1.4;
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.6, t0 + .015); g.gain.exponentialRampToValueAtTime(.001, t0 + .19);
+    o.connect(f).connect(g).connect(a.destination); o.start(t0); o.stop(t0 + .22);
+  }
+}
+function uhOh() {
+  const a = ac(), t0 = a.currentTime;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(700, t0); o.frequency.exponentialRampToValueAtTime(110, t0 + 1.4);
+  g.gain.setValueAtTime(.3, t0); g.gain.exponentialRampToValueAtTime(.001, t0 + 1.5);
+  o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + 1.55);
+}
+function meow() {
+  const a = ac(), t0 = a.currentTime;
+  const o = a.createOscillator(), f = a.createBiquadFilter(), g = a.createGain();
+  o.type = 'sawtooth'; f.type = 'bandpass'; f.Q.value = 4;
+  o.frequency.setValueAtTime(520, t0); o.frequency.linearRampToValueAtTime(780, t0 + .18); o.frequency.linearRampToValueAtTime(430, t0 + .6);
+  f.frequency.setValueAtTime(900, t0); f.frequency.linearRampToValueAtTime(1800, t0 + .2); f.frequency.linearRampToValueAtTime(700, t0 + .6);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.35, t0 + .05); g.gain.linearRampToValueAtTime(.25, t0 + .4); g.gain.exponentialRampToValueAtTime(.001, t0 + .7);
+  o.connect(f).connect(g).connect(a.destination); o.start(t0); o.stop(t0 + .75);
+}
+
+// ---------- HUD ----------
+let found = 0;
+const dots = document.getElementById('dots');
+function drawDots() { dots.innerHTML = ''; for (let i = 0; i < COUNT; i++) { const s = document.createElement('span'); if (i < found) s.className = 'got'; dots.appendChild(s); } }
+const win = document.getElementById('win');
+document.getElementById('again').onclick = () => { win.style.display = 'none'; startLevel((level + 1) % LEVELS.length); chime([392, 523.25, 659.25]); };
+
+// ---------- styrning ----------
+const keys = {};
+let heading = 0, speed = 0, vy = 0, phase = 0, lastInput = 0, wanderAt = 3, target = null, targetSpeed = 5.5;
+const help = document.getElementById('help');
+function touched() { lastInput = clock.elapsedTime; help.style.opacity = .0; }
+addEventListener('keydown', e => {
+  keys[e.code] = true; touched();
+  if (e.code === 'Space') { e.preventDefault(); jump(); }
+  if (e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+function jump() { if (kitty.cat.position.y <= 0.001) { vy = kitty.leo ? 8 : 7; kitty.leo ? roar() : kitty.dog ? bark() : meow(); } }
+
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+const marker = new THREE.Mesh(new THREE.RingGeometry(.3, .45, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false }));
+marker.rotation.x = -Math.PI / 2; marker.position.y = .05; scene.add(marker);
+renderer.domElement.addEventListener('pointerdown', e => {
+  touched();
+  mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  if (ray.intersectObject(kitty.cat, true).length) { jump(); return; }
+  const hit = ray.intersectObject(ground)[0];
+  if (hit) {
+    const p = hit.point.setY(0);
+    if (p.length() > FIELD) p.setLength(FIELD);
+    target = p; targetSpeed = 5.5;
+    marker.position.set(p.x, .05, p.z); marker.material.opacity = .9;
+  }
+});
+
+// ---------- spelloop ----------
+const clock = new THREE.Clock();
+const dir = new THREE.Vector3(), camGoal = new THREE.Vector3(), look = new THREE.Vector3();
+kitty.cat.position.set(0, 0, 0);
+camera.position.set(0, 5, -9);
+startLevel(Math.max(0, Math.min(LEVELS.length - 1, (parseInt(new URLSearchParams(location.search).get('bana')) || 1) - 1)));
+
+function angleDiff(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
+
+function tick() {
+  const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime;
+  const cp = kitty.cat.position;
+
+  if (falling) {
+    fallT += dt;
+    cp.x += (fallHole.x - cp.x) * Math.min(1, dt * 5); cp.z += (fallHole.z - cp.z) * Math.min(1, dt * 5);
+    cp.y = -Math.pow(fallT, 1.6) * 1.2;
+    heading += dt * 3; speed = 0;
+    if (fallT > 2.4) {
+      falling = false; cp.set(0, 0, 0); heading = 0; vy = 0; target = null;
+      placeRainbows();
+      toast('Börja om! Hitta alla bollar igen');
+      chime([392, 523.25, 659.25]);
+    }
+  } else {
+  // styrning
+  const fwd = (keys.ArrowUp || keys.KeyW ? 1 : 0) - (keys.ArrowDown || keys.KeyS ? .6 : 0);
+  const turn = (keys.ArrowLeft || keys.KeyA ? 1 : 0) - (keys.ArrowRight || keys.KeyD ? 1 : 0);
+  let want = 0;
+  if (fwd || turn) {
+    target = null; heading += turn * 2.6 * dt; want = fwd * 6;
+  } else if (target) {
+    const dx = target.x - cp.x, dz = target.z - cp.z, dist = Math.hypot(dx, dz);
+    if (dist < .4) target = null;
+    else {
+      const d = angleDiff(heading, Math.atan2(dx, dz));
+      heading += THREE.MathUtils.clamp(d, -4 * dt, 4 * dt);
+      want = Math.abs(d) > 1.2 ? 1.5 : Math.min(targetSpeed, dist * 2.5);
+    }
+  } else if (t - lastInput > wanderAt && !holes.length) {
+    // katten nosar runt lite själv när ingen styr
+    const a = Math.random() * Math.PI * 2;
+    target = new THREE.Vector3(cp.x + Math.cos(a) * 5, 0, cp.z + Math.sin(a) * 5);
+    if (target.length() > FIELD - 3) target.setLength(FIELD - 3);
+    targetSpeed = 2; lastInput = t; wanderAt = rand(3, 6);
+  }
+  speed += (want - speed) * Math.min(1, dt * 6);
+  dir.set(Math.sin(heading), 0, Math.cos(heading));
+  cp.addScaledVector(dir, speed * dt);
+  const r = Math.hypot(cp.x, cp.z);
+  if (r > FIELD) { cp.x *= FIELD / r; cp.z *= FIELD / r; }
+  vy -= 20 * dt; cp.y = Math.max(0, cp.y + vy * dt); if (cp.y === 0) vy = 0;
+  if (holes.length && cp.y < .05) for (const h of holes) {
+    if (Math.hypot(cp.x - h.x, cp.z - h.z) < h.r * .75) {
+      falling = true; fallT = 0; fallHole = h; target = null; vy = 0;
+      uhOh(); toast('Oj! Hunden trillade ner i ett hål');
+      break;
+    }
+  }
+  }
+  kitty.cat.rotation.y = heading;
+
+  // gånganimation
+  const moving = falling ? 0 : Math.min(Math.abs(speed) / 3, 1);
+  phase += Math.abs(speed) * dt * 3.2;
+  [0, Math.PI, Math.PI, 0].forEach((o, i) => kitty.legs[i].rotation.x = Math.sin(phase + o) * .7 * moving);
+  kitty.body.position.y = Math.abs(Math.sin(phase)) * .05 * moving;
+  if (falling) kitty.legs.forEach((l, i) => l.rotation.x = Math.sin(t * 20 + i) * .8);
+  kitty.head.rotation.x = Math.sin(phase * 2) * .04 * moving;
+  kitty.head.rotation.y = Math.sin(t * .7) * .25 * (1 - moving);
+  const tp = new THREE.Vector3(0, .95, kitty.leo ? -.95 : kitty.dog ? -.8 : -.6);
+  kitty.tail.forEach((s, i) => {
+    const up = kitty.leo ? -.7 + i * .13 : kitty.dog ? .9 + i * .05 : .25 + i * .13;
+    tp.z -= .1 * Math.cos(up); tp.y += .1 * Math.sin(up);
+    s.position.set(kitty.dog ? Math.sin(t * 14) * .045 * i : Math.sin(t * 2.5 - i * .35) * .025 * i, tp.y, tp.z);
+  });
+  catU.uTime.value = t; catU.uCat.value.copy(cp); catU.uDir.value.copy(dir);
+
+  // regnbågar
+  for (const rb of rainbows) {
+    const u = rb.userData;
+    if (!u.got) {
+      const isB = u.kind === 'balloon';
+      rb.position.y = isB ? u.baseY + Math.sin(t * 1.6 + u.phase) * .25 : u.kind === 'lamp' ? 0 : u.kind === 'ball' ? .38 + Math.abs(Math.sin(t * 3 + u.phase)) * .6 : .15 + Math.sin(t * 2 + u.phase) * .12;
+      rb.rotation.y = u.baseRot + Math.sin(t * .5 + u.phase) * .3;
+      if (isB) rb.rotation.z = Math.sin(t * 1.1 + u.phase) * .12;
+      if (u.light) u.light.intensity = 5 + Math.sin(t * 7 + u.phase) * .5 + Math.sin(t * 13 + u.phase) * .3;
+      if (!falling && Math.hypot(rb.position.x - cp.x, rb.position.z - cp.z) < LEVELS[level].radius) {
+        u.got = true; u.gotAt = t; found++; drawDots();
+        if (u.kind === 'lamp') { carried.push(rb); burst(rb.position.clone().setY(.8), 140, [0xffd23b, 0xe0301e, 0xffffff]); chime([659.25, 783.99, 987.77, 1318.5]); }
+        else if (u.kind === 'ball') { rb.visible = false; burst(rb.position.clone(), 120, [u.color, 0xffffff]); bark(); setTimeout(() => chime(), 150); }
+        else if (isB) { rb.visible = false; burst(rb.position.clone(), 140, [u.color, 0xffffff, u.color]); pop(); }
+        else { burst(rb.position.clone().setY(2)); chime(); }
+        if (found === COUNT) setTimeout(() => {
+          document.getElementById('winText').innerHTML = LEVELS[level].win;
+          document.getElementById('again').textContent = LEVELS[level].button;
+          win.style.display = 'flex';
+          chime([523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.5, 1568], .12);
+          for (let i = 0; i < 6; i++) setTimeout(() => burst(cp.clone().add(new THREE.Vector3(rand(-4, 4), rand(2, 5), rand(-4, 4)))), i * 200);
+        }, 900);
+      }
+    } else if (!u.kind) {
+      const k = Math.min((t - u.gotAt) / 1, 1);
+      rb.scale.setScalar(1 - k * k);
+      rb.position.y += dt * 4;
+      rb.rotation.y += dt * 8;
+      rb.visible = k < 1;
+    }
+  }
+
+  // lamporna leoparden har plockat upp följer efter i ett tåg
+  carried.forEach((l, i) => {
+    const tgt = i === 0 ? cp.clone().addScaledVector(dir, -2.2).setY(1.1) : carried[i - 1].position.clone();
+    const d = l.position.distanceTo(tgt);
+    if (i === 0) l.position.lerp(tgt, 1 - Math.exp(-dt * 6));
+    else if (d > .95) l.position.lerp(tgt, (d - .95) / d * Math.min(1, dt * 10));
+    l.position.y += (1.1 + Math.sin(t * 2.2 + i) * .15 - l.position.y) * Math.min(1, dt * 4);
+    l.rotation.z = Math.sin(t * 3 + i) * .15;
+    l.scale.setScalar(.85);
+  });
+
+  // glitter
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const b = bursts[i]; b.life += dt;
+    const p = b.pts.geometry.attributes.position;
+    b.V.forEach((v, j) => { v.y -= 9 * dt; p.setXYZ(j, p.getX(j) + v.x * dt, p.getY(j) + v.y * dt, p.getZ(j) + v.z * dt); });
+    p.needsUpdate = true;
+    b.pts.material.opacity = 1 - b.life / 1.6;
+    if (b.life > 1.6) { scene.remove(b.pts); b.pts.geometry.dispose(); bursts.splice(i, 1); }
+  }
+
+  marker.material.opacity *= Math.pow(.2, dt);
+  clouds.forEach((c, i) => { c.position.x += dt * (.6 + i % 3 * .2); if (c.position.x > 140) c.position.x = -140; });
+
+  // kamera följer katten
+  camGoal.set(cp.x - dir.x * 8, 4.8 + cp.y * .3, cp.z - dir.z * 8);
+  camera.position.lerp(camGoal, 1 - Math.exp(-dt * 2.5));
+  look.set(cp.x, 1.2 + cp.y * .5, cp.z);
+  camera.lookAt(look);
+  sky.position.copy(camera.position);
+  sun.position.set(cp.x + 15, 25, cp.z + 10); sun.target.position.copy(cp);
+  grassU.uTime.value = t; grassU.uCat.value.copy(cp);
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+tick();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
