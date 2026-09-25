@@ -6,6 +6,7 @@ A small three.js game made together with a young game designer, one level per id
 2. **Balloons**: the cat turns pink and blue and pops balloons.
 3. **Lamps**: a red and gold leopard picks up lanterns at sunset. They follow it in a glowing train.
 4. **Balls**: a yellow and brown dog hunts for balls. Watch out for the holes, or you have to start over.
+5. **Cakes**: a unicorn in every color, with a silver and gold horn, collects birthday cakes. Don't touch the train going round on its track.
 
 The game text is in Swedish.
 
@@ -24,4 +25,4 @@ open http://localhost:5301/
 
 - Arrow keys or WASD move the animal
 - Click the grass to run there
-- Space (or click the animal) jumps, with a meow, a roar or a bark
+- Space (or click the animal) jumps, with a meow, a roar, a bark or a neigh

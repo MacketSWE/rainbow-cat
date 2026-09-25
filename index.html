@@ -17,6 +17,7 @@
   #dots.balloons span.got{background:linear-gradient(135deg,#ff7eb6 50%,#5ab0ff 50%);transform:scale(1.25)}
   #dots.lamps span.got{background:radial-gradient(circle,#ffe27a 0 45%,#e0301e 46%);transform:scale(1.25)}
   #dots.balls span.got{background:radial-gradient(circle at 35% 35%,#fff 0 18%,#ff5a5a 19% 60%,#3ba7ff 61%);transform:scale(1.25)}
+  #dots.cakes span.got{background:linear-gradient(#ffb3d1 0 45%,#fff 46% 58%,#f6c98a 59%);transform:scale(1.25)}
   #dots span.got{background:conic-gradient(#ff3b3b,#ff9a2e,#ffe53b,#4cd964,#3ba7ff,#5a5cff,#b05cff,#ff3b3b);transform:scale(1.25)}
   #help{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,.85);padding:6px 18px;
     border-radius:14px;font-size:18px;color:#444;font-weight:600;transition:opacity 1.5s;user-select:none;text-align:center;max-width:calc(100% - 32px)}
@@ -30,7 +31,7 @@
   #win button:active{transform:translateY(4px);box-shadow:0 2px 0 #d45490}
 </style>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
 </script>
 </head>
 <body>
@@ -41,6 +42,7 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const COUNT = 7;          // antal regnbågar att hitta
 const FIELD = 40;         // hur långt katten får gå
@@ -56,6 +58,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 document.body.appendChild(renderer.domElement);
+const envTex = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), .04).texture;
 
 const scene = new THREE.Scene();
 const FOG = new THREE.Color(0xc4e8ff);
@@ -97,7 +100,11 @@ bladeGeo.translate(0, 0.35, 0);
 { const p = bladeGeo.attributes.position;
   for (let i = 0; i < p.count; i++) p.setX(i, p.getX(i) * (1 - (p.getY(i) / 0.7) * 0.85)); }
 
+const trackMaskCanvas = document.createElement('canvas'); trackMaskCanvas.width = trackMaskCanvas.height = 512;
+const trackMask = new THREE.CanvasTexture(trackMaskCanvas);
+trackMask.generateMipmaps = false; trackMask.minFilter = THREE.LinearFilter;
 const grassU = {
+  uTrackMask: { value: trackMask }, uTrackOn: { value: 0 },
   uTime: { value: 0 }, uCat: { value: new THREE.Vector3() }, uLight: { value: 1 },
   uHoles: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
   uFogColor: { value: FOG }, uFogNear: { value: 35 }, uFogFar: { value: 110 }
@@ -105,7 +112,7 @@ const grassU = {
 const grassMat = new THREE.ShaderMaterial({
   uniforms: grassU, side: THREE.DoubleSide,
   vertexShader: `
-    uniform float uTime; uniform vec3 uCat; uniform vec3 uHoles[8];
+    uniform float uTime; uniform vec3 uCat; uniform vec3 uHoles[8]; uniform sampler2D uTrackMask; uniform float uTrackOn;
     attribute float aShade;
     varying float vH; varying float vShade; varying float vDepth;
     void main(){
@@ -119,6 +126,7 @@ const grassMat = new THREE.ShaderMaterial({
       w.xz += d/dl * p * .7; w.y -= p * .25;
       vec3 b0 = (modelMatrix * instanceMatrix * vec4(0., 0., 0., 1.)).xyz;
       for (int i = 0; i < 8; i++) { vec3 h = uHoles[i]; if (h.z > 0. && distance(b0.xz, h.xy) < h.z + .2) w.y = -10.; }
+      if (uTrackOn > .5 && texture2D(uTrackMask, (b0.xz + 64.) / 128.).r > .5) w.y = -10.;
       vec4 mv = viewMatrix * w; vDepth = -mv.z;
       gl_Position = projectionMatrix * mv;
     }`,
@@ -184,7 +192,7 @@ function tree(x, z, s) {
   g.position.set(x, 0, z); g.scale.setScalar(s); scene.add(g);
 }
 for (let i = 0; i < 60; i++) { const a = Math.random() * Math.PI * 2, r = rand(46, 80); tree(Math.cos(a) * r, Math.sin(a) * r, rand(1, 1.8)); }
-const bushPos = [];
+const bushPos = [], bushes = [];
 for (let i = 0; i < 16; i++) {
   const a = Math.random() * Math.PI * 2, r = rand(8, 38);
   const g = new THREE.Group();
@@ -192,7 +200,7 @@ for (let i = 0; i < 16; i++) {
     const b = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(.6, .9), 1), leafMats[j]);
     b.position.set(rand(-.6, .6), .5, rand(-.6, .6)); b.castShadow = true; g.add(b);
   }
-  g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); scene.add(g); bushPos.push(g.position);
+  g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); scene.add(g); bushPos.push(g.position); bushes.push(g);
 }
 
 // moln
@@ -243,7 +251,7 @@ function rainbowFur() {
           rc = mix(gold, vec3(1., .5, .12), mid);
           rc = mix(rc, vec3(.82, .06, .05), ring);
         }
-        if (uMode > 2.5) {
+        if (uMode > 2.5 && uMode < 3.5) {
           vec3 side = normalize(cross(vec3(0., 1., 0.), uDir));
           vec3 lp = vec3(dot(rel, side), rel.y, along) * 1.8;
           vec3 cell = floor(lp); float md = 9.;
@@ -252,6 +260,20 @@ function rainbowFur() {
           }
           rc = mix(vec3(1., .76, .08), vec3(.55, .27, .07), 1. - smoothstep(.3, .36, md));
         }
+        if (uMode > 3.5) {
+          vec3 side = normalize(cross(vec3(0., 1., 0.), uDir));
+          vec3 lp = vec3(dot(rel, side), rel.y, along) * 2.6;
+          vec3 cell = floor(lp); float md = 9.; vec3 best = cell;
+          for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+            vec3 cc = cell + vec3(x, y, z); float dd = length(lp - cc - hash3(cc));
+            if (dd < md) { md = dd; best = cc; }
+          }
+          float hs = fract(sin(dot(best, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+          vec3 PAL[12] = vec3[12](vec3(1., .23, .23), vec3(1., .6, .18), vec3(1., .9, .23), vec3(.3, .85, .39),
+            vec3(.1, .88, .82), vec3(.23, .6, 1.), vec3(.62, .36, 1.), vec3(1., .5, .78),
+            vec3(.52, .3, .14), vec3(.07, .07, .07), vec3(.94, .85, .68), vec3(1., 1., 1.));
+          rc = PAL[int(floor(hs * 11.999))];
+        }
         rc = mix(rc, vec3(1.), .12);
         vec4 diffuseColor = vec4(rc * rc, opacity);`);
   };
@@ -259,7 +281,7 @@ function rainbowFur() {
 }
 
 function makeCat(kind = 'cat') {
-  const leo = kind === 'leo', dog = kind === 'dog';
+  const leo = kind === 'leo', dog = kind === 'dog', uni = kind === 'uni';
   const cat = new THREE.Group();
   const fur = rainbowFur();
   const cream = new THREE.MeshStandardMaterial({ color: 0xfff6ea, roughness: .9 });
@@ -272,12 +294,38 @@ function makeCat(kind = 'cat') {
     m.castShadow = true; parent.add(m); return m;
   };
   const body = new THREE.Group(); cat.add(body);
-  if (dog) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .85, 0, .75, .66, 1.4);
+  if (uni) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, 1.35, 0, .8, .75, 1.5);
+  else if (dog) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .85, 0, .75, .66, 1.4);
   else if (leo) add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .85, 0, .72, .6, 1.6);
   else add(new THREE.SphereGeometry(.5, 28, 18), fur, body, 0, .8, 0, .78, .68, 1.25);
-  add(new THREE.SphereGeometry(.25, 16, 12), cream, body, 0, .78, leo ? .6 : .42, .9, .9, .6);
+  if (!uni) add(new THREE.SphereGeometry(.25, 16, 12), cream, body, 0, .78, leo ? .6 : .42, .9, .9, .6);
 
-  const head = new THREE.Group(); head.position.set(0, dog ? 1.38 : 1.3, leo ? .92 : dog ? .8 : .62); if (leo) head.scale.setScalar(.9); body.add(head);
+  const head = new THREE.Group(); head.position.set(0, uni ? 2.4 : dog ? 1.38 : 1.3, uni ? 1.12 : leo ? .92 : dog ? .8 : .62); if (leo) head.scale.setScalar(.9); body.add(head);
+  if (uni) {
+    const neck = add(new THREE.CylinderGeometry(.26, .36, 1.1, 16), fur, body, 0, 1.9, .78); neck.rotation.x = .6;
+    const skull = add(new THREE.SphereGeometry(.32, 24, 16), fur, head, 0, 0, 0, .85, .85, 1.5); skull.rotation.x = .5;
+    add(new THREE.SphereGeometry(.2, 16, 12), fur, head, 0, -.24, .36, 1, .85, 1.1);
+    for (const sx of [-1, 1]) {
+      add(new THREE.SphereGeometry(.06, 12, 10), black, head, sx * .21, .06, .12);
+      add(new THREE.SphereGeometry(.02, 8, 6), white, head, sx * .23, .09, .17);
+      const ear = add(new THREE.ConeGeometry(.07, .22, 8), fur, head, sx * .13, .32, -.15); ear.rotation.z = -sx * .2;
+      add(new THREE.SphereGeometry(.03, 8, 6), black, head, sx * .08, -.3, .56);
+    }
+    const hornGeo = new THREE.ConeGeometry(.08, .75, 32, 40);
+    const hp = hornGeo.attributes.position, hc = [];
+    const G = new THREE.Color(0xffc83d), S = new THREE.Color(0xe8ecf2);
+    for (let i = 0; i < hp.count; i++) {
+      const band = (hp.getY(i) + .375) * 5 + Math.atan2(hp.getZ(i), hp.getX(i)) / (Math.PI * 2);
+      const c = (band - Math.floor(band)) < .5 ? G : S; hc.push(c.r, c.g, c.b);
+    }
+    hornGeo.setAttribute('color', new THREE.Float32BufferAttribute(hc, 3));
+    const horn = add(hornGeo, new THREE.MeshStandardMaterial({ vertexColors: true, metalness: .9, roughness: .2, envMap: envTex, envMapIntensity: 1.4 }), head, 0, .5, .22);
+    horn.rotation.x = .55;
+    for (let i = 0; i < 8; i++) {
+      const k = i / 7;
+      add(new THREE.SphereGeometry(.15 - k * .03, 12, 10), fur, body, 0, 2.5 - k * .95, .92 - k * .6 - .14);
+    }
+  } else {
   add(new THREE.SphereGeometry(.4, 28, 18), fur, head, 0, 0, 0, 1.05, .95, .95);
   if (dog) {
     add(new THREE.SphereGeometry(.2, 16, 12), cream, head, 0, -.12, .36, 1.05, .8, 1.5);
@@ -308,20 +356,27 @@ function makeCat(kind = 'cat') {
   for (const sx of [-1, 1]) for (const dy of [-.03, .03]) wp.push(sx * .12, -.1, .4, sx * .5, -.1 + dy * 3, .36);
   wg.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3));
   if (!dog) head.add(new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ color: 0xffffff })));
+  }
 
   const legs = [];
-  for (const [x, z] of dog ? [[.22, .58], [-.22, .58], [.22, -.58], [-.22, -.58]] : leo ? [[.2, .68], [-.2, .68], [.2, -.68], [-.2, -.68]] : [[.22, .45], [-.22, .45], [.22, -.45], [-.22, -.45]]) {
-    const pivot = new THREE.Group(); pivot.position.set(x, .62, z); cat.add(pivot);
-    add(new THREE.CylinderGeometry(.1, .09, .5, 12), fur, pivot, 0, -.25, 0);
-    add(new THREE.SphereGeometry(.11, 12, 10), cream, pivot, 0, -.52, .03, 1, .7, 1.2);
+  const hoofMat = new THREE.MeshStandardMaterial({ color: 0xffc83d, metalness: .9, roughness: .25, envMap: envTex });
+  for (const [x, z] of uni ? [[.26, .72], [-.26, .72], [.26, -.72], [-.26, -.72]] : dog ? [[.22, .58], [-.22, .58], [.22, -.58], [-.22, -.58]] : leo ? [[.2, .68], [-.2, .68], [.2, -.68], [-.2, -.68]] : [[.22, .45], [-.22, .45], [.22, -.45], [-.22, -.45]]) {
+    const pivot = new THREE.Group(); pivot.position.set(x, uni ? 1.05 : .62, z); cat.add(pivot);
+    if (uni) {
+      add(new THREE.CylinderGeometry(.12, .1, .9, 12), fur, pivot, 0, -.45, 0);
+      add(new THREE.CylinderGeometry(.12, .14, .16, 12), hoofMat, pivot, 0, -.97, 0);
+    } else {
+      add(new THREE.CylinderGeometry(.1, .09, .5, 12), fur, pivot, 0, -.25, 0);
+      add(new THREE.SphereGeometry(.11, 12, 10), cream, pivot, 0, -.52, .03, 1, .7, 1.2);
+    }
     legs.push(pivot);
   }
   const tail = [];
-  const tl = leo ? 18 : dog ? 7 : 12;
-  for (let i = 0; i < tl; i++) tail.push(add(new THREE.SphereGeometry(leo ? .09 - i * .0015 : .1 - i * .003, 12, 10), fur, body, 0, 0, 0));
+  const tl = leo ? 18 : dog ? 7 : uni ? 14 : 12;
+  for (let i = 0; i < tl; i++) tail.push(add(new THREE.SphereGeometry(uni ? .14 - i * .004 : leo ? .09 - i * .0015 : .1 - i * .003, 12, 10), fur, body, 0, 0, 0));
   if (leo) cat.scale.setScalar(1.15);
   scene.add(cat);
-  return { cat, body, head, legs, tail, leo, dog, kind };
+  return { cat, body, head, legs, tail, leo, dog, uni, kind };
 }
 let kitty = makeCat('cat');
 function setCharacter(kind) {
@@ -437,12 +492,165 @@ function setHoles(n) {
   grassU.uHoles.value.forEach((v, i) => holes[i] ? v.set(holes[i].x, holes[i].z, holes[i].r) : v.set(0, 0, 0));
   const m = new THREE.Matrix4();
   flowerPos.forEach((p, i) => {
-    const inHole = holes.some(h => Math.hypot(h.x - p.x, h.z - p.z) < h.r + .4);
+    const inHole = holes.some(h => Math.hypot(h.x - p.x, h.z - p.z) < h.r + .4) || nearTrack(p.x, p.z, 1.3);
     flowerMesh.setMatrixAt(i, inHole ? m.makeScale(0, 0, 0) : m.makeTranslation(p.x, p.y, p.z));
   });
   flowerMesh.instanceMatrix.needsUpdate = true;
+  bushes.forEach(b => b.visible = !nearTrack(b.position.x, b.position.z, 2.4));
 }
-let falling = false, fallT = 0, fallHole = null, toastTimer;
+let falling = false, fallT = 0, fallHole = null, toastTimer, fallKind = 'hole', lastWhistle = 0;
+const knock = new THREE.Vector3();
+
+const ICING = [0xffb3d1, 0xffffff, 0xcdb4ff, 0xb5f5d8, 0xffe08a, 0x8fd3ff, 0xff9aa2];
+const SPRINKLE = [0xff3b3b, 0xffe53b, 0x3ba7ff, 0x4cd964, 0xb05cff, 0xffffff];
+function makeCake(x, z, i) {
+  const g = new THREE.Group();
+  const m = c => new THREE.MeshStandardMaterial({ color: c, roughness: .5 });
+  const icing = m(ICING[i % ICING.length]), drip = m(ICING[(i + 2) % ICING.length]);
+  const part = (geo, mat, y, rx = 0) => { const p = new THREE.Mesh(geo, mat); p.position.y = y; p.rotation.x = rx; p.castShadow = true; g.add(p); return p; };
+  part(new THREE.CylinderGeometry(.78, .72, .06, 28), m(0xffffff), .03);
+  part(new THREE.CylinderGeometry(.56, .56, .46, 28), icing, .29);
+  part(new THREE.TorusGeometry(.56, .065, 8, 28), drip, .52, -Math.PI / 2);
+  part(new THREE.CylinderGeometry(.38, .38, .36, 28), icing, .7);
+  part(new THREE.TorusGeometry(.38, .055, 8, 28), drip, .88, -Math.PI / 2);
+  for (let k = 0; k < 24; k++) {
+    const a = Math.random() * Math.PI * 2, r = rand(.4, .52);
+    const sp = new THREE.Mesh(new THREE.BoxGeometry(.07, .025, .025), m(SPRINKLE[k % SPRINKLE.length]));
+    sp.position.set(Math.cos(a) * r, .53, Math.sin(a) * r); sp.rotation.y = Math.random() * 3; g.add(sp);
+  }
+  const flameMat = new THREE.MeshBasicMaterial({ color: 0xffb030 });
+  for (let k = 0; k < 5; k++) {
+    const a = k / 5 * Math.PI * 2, cx = Math.cos(a) * .2, cz = Math.sin(a) * .2;
+    const c = new THREE.Mesh(new THREE.CylinderGeometry(.03, .03, .26, 8), m(SPRINKLE[k])); c.position.set(cx, 1.01, cz); g.add(c);
+    const f = new THREE.Mesh(new THREE.SphereGeometry(.045, 8, 6), flameMat); f.position.set(cx, 1.19, cz); f.scale.y = 1.6; g.add(f);
+    const gl = new THREE.Sprite(glowMat); gl.position.set(cx, 1.19, cz); gl.scale.setScalar(.45); g.add(gl);
+  }
+  g.position.set(x, 0, z);
+  g.userData = { kind: 'cake', baseRot: Math.random() * 6, phase: Math.random() * 10, got: false, gotAt: 0 };
+  scene.add(g);
+  return g;
+}
+
+let track = null, train = null, trackPts = [];
+const nearTrack = (x, z, d) => trackPts.some(p => Math.hypot(p.x - x, p.z - z) < d);
+function setTrack(on) {
+  if (track) { scene.remove(track.group, train.group); train.puffs.forEach(p => scene.remove(p)); }
+  track = null; train = null; trackPts = []; grassU.uTrackOn.value = 0;
+  if (!on) return;
+  const k = rand(0, 6.28), cps = [];
+  for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2, r = 22 + Math.sin(a * 3 + k) * 5; cps.push(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r)); }
+  const curve = new THREE.CatmullRomCurve3(cps, true, 'catmullrom', .5), L = curve.getLength();
+  const N = Math.round(L / .8);
+  trackPts = curve.getSpacedPoints(N);
+  const tangents = trackPts.map((_, i) => curve.getTangentAt((i / N) % 1));
+  const normals = tangents.map(t => new THREE.Vector3(-t.z, 0, t.x).normalize());
+  const cx = trackMaskCanvas.getContext('2d');
+  cx.fillStyle = '#000'; cx.fillRect(0, 0, 512, 512);
+  cx.strokeStyle = '#fff'; cx.lineWidth = 2.4 / 128 * 512; cx.lineJoin = 'round'; cx.beginPath();
+  trackPts.forEach((p, i) => { const px = (p.x + 64) / 128 * 512, py = (1 - (p.z + 64) / 128) * 512; i ? cx.lineTo(px, py) : cx.moveTo(px, py); });
+  cx.closePath(); cx.stroke();
+  trackMask.needsUpdate = true; grassU.uTrackOn.value = 1;
+
+  const group = new THREE.Group();
+  const pos = [], idx = [];
+  trackPts.forEach((p, i) => {
+    const n = normals[i];
+    pos.push(p.x + n.x * 1, .015, p.z + n.z * 1, p.x - n.x * 1, .015, p.z - n.z * 1);
+    if (i < N) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  });
+  const rib = new THREE.BufferGeometry();
+  rib.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); rib.setIndex(idx); rib.computeVertexNormals();
+  const bed = new THREE.Mesh(rib, new THREE.MeshStandardMaterial({ color: 0xa8957c, roughness: 1, side: THREE.DoubleSide }));
+  bed.receiveShadow = true; group.add(bed);
+  const sl = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, .1, .24), new THREE.MeshStandardMaterial({ color: 0x6b4426, roughness: .9 }), N);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < N; i++) {
+    const p = trackPts[i], t = tangents[i];
+    dummy.position.set(p.x, .06, p.z); dummy.lookAt(p.x + t.x, .06, p.z + t.z); dummy.updateMatrix();
+    sl.setMatrixAt(i, dummy.matrix);
+  }
+  sl.receiveShadow = true; group.add(sl);
+  const railMat = new THREE.MeshStandardMaterial({ color: 0xc0c4cc, metalness: .8, roughness: .3, envMap: envTex });
+  for (const sd of [-1, 1]) {
+    const rp = trackPts.slice(0, N).map((p, i) => new THREE.Vector3(p.x + normals[i].x * .5 * sd, .16, p.z + normals[i].z * .5 * sd));
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rp, true), N * 2, .05, 6, true), railMat));
+  }
+  scene.add(group);
+  track = { curve, L, group };
+  train = makeTrain();
+}
+
+function makeTrain() {
+  const group = new THREE.Group(), cars = [], wheels = [];
+  const mat = c => new THREE.MeshStandardMaterial({ color: c, roughness: .45, metalness: .1 });
+  const blackM = mat(0x222222), redM = mat(0xe8342c);
+  const goldM = new THREE.MeshStandardMaterial({ color: 0xffc83d, metalness: .9, roughness: .25, envMap: envTex });
+  const box = (w, h, d, m, x, y, z, parent) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); b.castShadow = true; parent.add(b); return b; };
+  const cyl = (rt, rb, h, m, x, y, z, parent, rx = 0, rz = 0) => { const c = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 20), m); c.position.set(x, y, z); c.rotation.set(rx, 0, rz); c.castShadow = true; parent.add(c); return c; };
+  const wheelSet = (parent, zs) => { for (const z of zs) for (const x of [.64, -.64]) wheels.push(cyl(.32, .32, .12, redM, x, .35, z, parent, 0, Math.PI / 2)); };
+
+  const loco = new THREE.Group();
+  box(1.3, .3, 2.6, blackM, 0, .45, 0, loco);
+  cyl(.52, .52, 1.6, redM, 0, 1.05, .45, loco, Math.PI / 2);
+  cyl(.54, .54, .08, goldM, 0, 1.05, 1.26, loco, Math.PI / 2);
+  cyl(.16, .22, .6, blackM, 0, 1.75, .85, loco);
+  cyl(.27, .2, .14, blackM, 0, 2.1, .85, loco);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(.22, 16, 12), goldM); dome.position.set(0, 1.58, .15); loco.add(dome);
+  box(1.3, 1.3, 1.0, redM, 0, 1.2, -.75, loco);
+  box(1.32, .42, .55, mat(0x9fd8ff), 0, 1.5, -.75, loco);
+  box(1.5, .12, 1.2, blackM, 0, 1.92, -.75, loco);
+  box(1.2, .2, .3, goldM, 0, .35, 1.35, loco);
+  for (const sx of [-1, 1]) {
+    const e = new THREE.Mesh(new THREE.SphereGeometry(.12, 12, 10), mat(0xffffff)); e.position.set(sx * .2, 1.15, 1.3); e.scale.z = .4; loco.add(e);
+    const pu = new THREE.Mesh(new THREE.SphereGeometry(.06, 10, 8), blackM); pu.position.set(sx * .2, 1.15, 1.35); loco.add(pu);
+  }
+  wheelSet(loco, [.8, -.1, -.9]);
+  cars.push({ obj: loco, off: 0 });
+  [0xffd23b, 0x3ba7ff, 0x4cd964, 0xff7eb6].forEach((c, i) => {
+    const w = new THREE.Group();
+    box(1.3, .25, 2.2, blackM, 0, .45, 0, w);
+    box(1.3, .8, 2.1, mat(c), 0, .95, 0, w);
+    for (let k = 0; k < 3; k++) box(.42, .42, .42, mat(SPRINKLE[(i + k) % SPRINKLE.length]), rand(-.3, .3), 1.56, -.6 + k * .6, w);
+    wheelSet(w, [.65, -.65]);
+    cars.push({ obj: w, off: 2.75 + i * 2.5 });
+  });
+  cars.forEach(c => group.add(c.obj));
+  scene.add(group);
+  const puffs = Array.from({ length: 18 }, () => {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(.28, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false }));
+    p.userData.life = 99; scene.add(p); return p;
+  });
+  return { group, cars, wheels, u: Math.random(), puffs, puffT: 0, pi: 0, speed: 7 };
+}
+
+function updateTrain(dt, t) {
+  if (!train) return;
+  const tr = train;
+  tr.u = (tr.u + dt * tr.speed / track.L) % 1;
+  for (const c of tr.cars) {
+    const u = ((tr.u - c.off / track.L) % 1 + 1) % 1;
+    const p = track.curve.getPointAt(u), tg = track.curve.getTangentAt(u);
+    c.obj.position.set(p.x, 0, p.z);
+    c.obj.lookAt(p.x + tg.x, 0, p.z + tg.z);
+    c.obj.updateMatrixWorld();
+  }
+  tr.wheels.forEach(w => w.rotation.x += dt * tr.speed / .32);
+  tr.puffT += dt;
+  if (tr.puffT > .18) {
+    tr.puffT = 0;
+    const p = tr.puffs[tr.pi++ % tr.puffs.length];
+    tr.cars[0].obj.localToWorld(p.position.set(0, 2.25, .85));
+    p.userData.life = 0; p.scale.setScalar(.6);
+  }
+  for (const p of tr.puffs) {
+    const u = p.userData;
+    if (u.life > 1.6) { p.material.opacity = 0; continue; }
+    u.life += dt; p.position.y += dt * 1.4; p.scale.setScalar(.6 + u.life * 1.2);
+    p.material.opacity = .85 * (1 - u.life / 1.6);
+  }
+  const lc = tr.cars[0].obj.position;
+  if (Math.hypot(lc.x - kitty.cat.position.x, lc.z - kitty.cat.position.z) < 10 && t - lastWhistle > 6) { lastWhistle = t; whistle(); }
+}
 function toast(txt) {
   const el = document.getElementById('toast');
   el.textContent = txt; el.style.opacity = 1;
@@ -450,6 +658,7 @@ function toast(txt) {
 }
 const ENV = {
   day:  { top: 0x3d9bff, fog: 0xc4e8ff, sun: 2.6, sunCol: 0xfff1d6, hemi: 1.3, grass: 1, exp: 1.05 },
+  candy: { top: 0x6fa8ff, fog: 0xffd9ef, sun: 2.4, sunCol: 0xfff0f8, hemi: 1.35, grass: 1, exp: 1.05 },
   dusk: { top: 0x2b1f63, fog: 0xf0977a, sun: .8, sunCol: 0xff8a50, hemi: .5, grass: .5, exp: 1.1 },
 };
 function setEnv(e) {
@@ -468,7 +677,9 @@ const LEVELS = [
   { label: 'Bana 3: Lampor', make: (x, z) => makeLamp(x, z), radius: 1.4, mode: 2, dots: 'lamps', char: 'leo', env: 'dusk',
     win: 'Bana 3 klar!<br>Leoparden plockade upp alla lampor!', button: 'Till bana 4' },
   { label: 'Bana 4: Bollar', make: (x, z, i) => makeBall(x, z, i), radius: 1.3, mode: 3, dots: 'balls', char: 'dog', holes: 6,
-    win: 'Hurra!<br>Hunden hittade alla bollar!', button: 'Spela igen' },
+    win: 'Bana 4 klar!<br>Hunden hittade alla bollar!', button: 'Till bana 5', restart: 'Börja om! Hitta alla bollar igen' },
+  { label: 'Bana 5: Tårtor', make: (x, z, i) => makeCake(x, z, i), radius: 1.5, mode: 4, dots: 'cakes', char: 'uni', env: 'candy', train: true,
+    win: 'Hurra!<br>Enhörningen hittade alla tårtor!', button: 'Spela igen', restart: 'Börja om! Hitta alla tårtor igen', tune: happyBirthday },
 ];
 let level = 0;
 function startLevel(n) {
@@ -482,8 +693,10 @@ function startLevel(n) {
     cat: 'Pilarna styr katten. Klicka i gräset så springer den dit. Mellanslag hoppar och jamar.',
     leo: 'Pilarna styr leoparden. Klicka i gräset så springer den dit. Mellanslag hoppar och ryter.',
     dog: 'Pilarna styr hunden. Akta dig för hålen! Mellanslag hoppar över dem och skäller.',
+    uni: 'Pilarna styr enhörningen. Akta dig för tåget! Mellanslag hoppar och gnäggar.',
   }[L.char || 'cat'];
   document.getElementById('help').style.opacity = 1;
+  setTrack(!!L.train);
   setHoles(L.holes || 0);
   falling = false;
   setEnv(ENV[L.env || 'day']);
@@ -496,7 +709,7 @@ function placeRainbows() {
   while (pts.length < COUNT) {
     const a = Math.random() * Math.PI * 2, r = rand(10, 36);
     const p = new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r);
-    if (pts.every(q => q.distanceTo(p) > 9) && holes.every(h => Math.hypot(h.x - p.x, h.z - p.y) > h.r + 2.5)) pts.push(p);
+    if (pts.every(q => q.distanceTo(p) > 9) && holes.every(h => Math.hypot(h.x - p.x, h.z - p.y) > h.r + 2.5) && !nearTrack(p.x, p.y, 3.5)) pts.push(p);
   }
   rainbows = pts.map((p, i) => LEVELS[level].make(p.x, p.y, i));
   found = 0; drawDots();
@@ -589,6 +802,47 @@ function uhOh() {
   g.gain.setValueAtTime(.3, t0); g.gain.exponentialRampToValueAtTime(.001, t0 + 1.5);
   o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + 1.55);
 }
+function neigh() {
+  const a = ac(), t0 = a.currentTime, dur = 1.1;
+  const o = a.createOscillator(), vib = a.createOscillator(), vg = a.createGain(), f = a.createBiquadFilter(), g = a.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(850, t0); o.frequency.linearRampToValueAtTime(1150, t0 + .15); o.frequency.exponentialRampToValueAtTime(480, t0 + dur);
+  vib.frequency.setValueAtTime(15, t0); vib.frequency.linearRampToValueAtTime(8, t0 + dur);
+  vg.gain.setValueAtTime(130, t0); vg.gain.linearRampToValueAtTime(40, t0 + dur);
+  vib.connect(vg).connect(o.frequency);
+  f.type = 'bandpass'; f.frequency.value = 1500; f.Q.value = 1.5;
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.4, t0 + .05); g.gain.exponentialRampToValueAtTime(.001, t0 + dur);
+  o.connect(f).connect(g).connect(a.destination);
+  o.start(t0); vib.start(t0); o.stop(t0 + dur + .05); vib.stop(t0 + dur + .05);
+  setTimeout(() => chime([1568, 2093, 2637], .05), 200);
+}
+function whistle(times = 2) {
+  const a = ac();
+  for (let k = 0; k < times; k++) {
+    const t0 = a.currentTime + k * .45;
+    for (const f0 of [740, 880, 1100]) {
+      const o = a.createOscillator(), g = a.createGain();
+      o.type = 'sine'; o.frequency.setValueAtTime(f0 * .96, t0); o.frequency.linearRampToValueAtTime(f0, t0 + .08);
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.09, t0 + .04); g.gain.setValueAtTime(.09, t0 + .3); g.gain.linearRampToValueAtTime(0, t0 + .38);
+      o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + .4);
+    }
+  }
+}
+function happyBirthday() {
+  const a = ac(), N = { G4: 392, A4: 440, B4: 493.88, C5: 523.25, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99 };
+  const song = [['G4', .3], ['G4', .1], ['A4', .4], ['G4', .4], ['C5', .4], ['B4', .8],
+    ['G4', .3], ['G4', .1], ['A4', .4], ['G4', .4], ['D5', .4], ['C5', .8],
+    ['G4', .3], ['G4', .1], ['G5', .4], ['E5', .4], ['C5', .4], ['B4', .4], ['A4', .8],
+    ['F5', .3], ['F5', .1], ['E5', .4], ['C5', .4], ['D5', .4], ['C5', 1]];
+  let t0 = a.currentTime + .1;
+  for (const [n, d] of song) {
+    const o = a.createOscillator(), g = a.createGain();
+    o.type = 'triangle'; o.frequency.value = N[n];
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.2, t0 + .02); g.gain.exponentialRampToValueAtTime(.001, t0 + d * 1.1);
+    o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + d * 1.15);
+    t0 += d;
+  }
+}
 function meow() {
   const a = ac(), t0 = a.currentTime;
   const o = a.createOscillator(), f = a.createBiquadFilter(), g = a.createGain();
@@ -617,7 +871,7 @@ addEventListener('keydown', e => {
   if (e.code.startsWith('Arrow')) e.preventDefault();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-function jump() { if (kitty.cat.position.y <= 0.001) { vy = kitty.leo ? 8 : 7; kitty.leo ? roar() : kitty.dog ? bark() : meow(); } }
+function jump() { if (kitty.cat.position.y <= 0.001) { vy = kitty.leo ? 8 : 7; kitty.leo ? roar() : kitty.dog ? bark() : kitty.uni ? neigh() : meow(); } }
 
 const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
 const marker = new THREE.Mesh(new THREE.RingGeometry(.3, .45, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false }));
@@ -648,16 +902,24 @@ function angleDiff(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; 
 function tick() {
   const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime;
   const cp = kitty.cat.position;
+  updateTrain(dt, t);
 
   if (falling) {
     fallT += dt;
-    cp.x += (fallHole.x - cp.x) * Math.min(1, dt * 5); cp.z += (fallHole.z - cp.z) * Math.min(1, dt * 5);
-    cp.y = -Math.pow(fallT, 1.6) * 1.2;
-    heading += dt * 3; speed = 0;
+    if (fallKind === 'hit') {
+      cp.addScaledVector(knock, dt * 6 * Math.max(0, 1 - fallT));
+      cp.y = Math.max(0, Math.sin(Math.min(fallT, 1) * Math.PI) * 1.6);
+      heading += dt * 10 * Math.max(0, 1.2 - fallT);
+    } else {
+      cp.x += (fallHole.x - cp.x) * Math.min(1, dt * 5); cp.z += (fallHole.z - cp.z) * Math.min(1, dt * 5);
+      cp.y = -Math.pow(fallT, 1.6) * 1.2;
+      heading += dt * 3;
+    }
+    speed = 0;
     if (fallT > 2.4) {
       falling = false; cp.set(0, 0, 0); heading = 0; vy = 0; target = null;
       placeRainbows();
-      toast('Börja om! Hitta alla bollar igen');
+      toast(LEVELS[level].restart || 'Börja om!');
       chime([392, 523.25, 659.25]);
     }
   } else {
@@ -675,7 +937,7 @@ function tick() {
       heading += THREE.MathUtils.clamp(d, -4 * dt, 4 * dt);
       want = Math.abs(d) > 1.2 ? 1.5 : Math.min(targetSpeed, dist * 2.5);
     }
-  } else if (t - lastInput > wanderAt && !holes.length) {
+  } else if (t - lastInput > wanderAt && !holes.length && !train) {
     // katten nosar runt lite själv när ingen styr
     const a = Math.random() * Math.PI * 2;
     target = new THREE.Vector3(cp.x + Math.cos(a) * 5, 0, cp.z + Math.sin(a) * 5);
@@ -690,8 +952,17 @@ function tick() {
   vy -= 20 * dt; cp.y = Math.max(0, cp.y + vy * dt); if (cp.y === 0) vy = 0;
   if (holes.length && cp.y < .05) for (const h of holes) {
     if (Math.hypot(cp.x - h.x, cp.z - h.z) < h.r * .75) {
-      falling = true; fallT = 0; fallHole = h; target = null; vy = 0;
+      falling = true; fallKind = 'hole'; fallT = 0; fallHole = h; target = null; vy = 0;
       uhOh(); toast('Oj! Hunden trillade ner i ett hål');
+      break;
+    }
+  }
+  if (train && !falling && cp.y < 1.4) for (const c of train.cars) {
+    const l = c.obj.worldToLocal(cp.clone());
+    if (Math.abs(l.x) < 1.15 && Math.abs(l.z) < 1.6) {
+      falling = true; fallKind = 'hit'; fallT = 0; target = null; vy = 0;
+      knock.set(cp.x - c.obj.position.x, 0, cp.z - c.obj.position.z).normalize();
+      whistle(3); uhOh(); toast('Aj! Enhörningen nuddade tåget');
       break;
     }
   }
@@ -706,9 +977,9 @@ function tick() {
   if (falling) kitty.legs.forEach((l, i) => l.rotation.x = Math.sin(t * 20 + i) * .8);
   kitty.head.rotation.x = Math.sin(phase * 2) * .04 * moving;
   kitty.head.rotation.y = Math.sin(t * .7) * .25 * (1 - moving);
-  const tp = new THREE.Vector3(0, .95, kitty.leo ? -.95 : kitty.dog ? -.8 : -.6);
+  const tp = kitty.uni ? new THREE.Vector3(0, 1.55, -1.1) : new THREE.Vector3(0, .95, kitty.leo ? -.95 : kitty.dog ? -.8 : -.6);
   kitty.tail.forEach((s, i) => {
-    const up = kitty.leo ? -.7 + i * .13 : kitty.dog ? .9 + i * .05 : .25 + i * .13;
+    const up = kitty.uni ? -1.2 + i * .03 : kitty.leo ? -.7 + i * .13 : kitty.dog ? .9 + i * .05 : .25 + i * .13;
     tp.z -= .1 * Math.cos(up); tp.y += .1 * Math.sin(up);
     s.position.set(kitty.dog ? Math.sin(t * 14) * .045 * i : Math.sin(t * 2.5 - i * .35) * .025 * i, tp.y, tp.z);
   });
@@ -719,13 +990,14 @@ function tick() {
     const u = rb.userData;
     if (!u.got) {
       const isB = u.kind === 'balloon';
-      rb.position.y = isB ? u.baseY + Math.sin(t * 1.6 + u.phase) * .25 : u.kind === 'lamp' ? 0 : u.kind === 'ball' ? .38 + Math.abs(Math.sin(t * 3 + u.phase)) * .6 : .15 + Math.sin(t * 2 + u.phase) * .12;
+      rb.position.y = isB ? u.baseY + Math.sin(t * 1.6 + u.phase) * .25 : u.kind === 'lamp' ? 0 : u.kind === 'ball' ? .38 + Math.abs(Math.sin(t * 3 + u.phase)) * .6 : u.kind === 'cake' ? 0 : .15 + Math.sin(t * 2 + u.phase) * .12;
       rb.rotation.y = u.baseRot + Math.sin(t * .5 + u.phase) * .3;
       if (isB) rb.rotation.z = Math.sin(t * 1.1 + u.phase) * .12;
       if (u.light) u.light.intensity = 5 + Math.sin(t * 7 + u.phase) * .5 + Math.sin(t * 13 + u.phase) * .3;
       if (!falling && Math.hypot(rb.position.x - cp.x, rb.position.z - cp.z) < LEVELS[level].radius) {
         u.got = true; u.gotAt = t; found++; drawDots();
         if (u.kind === 'lamp') { carried.push(rb); burst(rb.position.clone().setY(.8), 140, [0xffd23b, 0xe0301e, 0xffffff]); chime([659.25, 783.99, 987.77, 1318.5]); }
+        else if (u.kind === 'cake') { rb.visible = false; burst(rb.position.clone().setY(1), 180); chime([523.25, 659.25, 783.99, 1046.5, 1318.5]); }
         else if (u.kind === 'ball') { rb.visible = false; burst(rb.position.clone(), 120, [u.color, 0xffffff]); bark(); setTimeout(() => chime(), 150); }
         else if (isB) { rb.visible = false; burst(rb.position.clone(), 140, [u.color, 0xffffff, u.color]); pop(); }
         else { burst(rb.position.clone().setY(2)); chime(); }
@@ -733,7 +1005,7 @@ function tick() {
           document.getElementById('winText').innerHTML = LEVELS[level].win;
           document.getElementById('again').textContent = LEVELS[level].button;
           win.style.display = 'flex';
-          chime([523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.5, 1568], .12);
+          if (LEVELS[level].tune) LEVELS[level].tune(); else chime([523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.5, 1568], .12);
           for (let i = 0; i < 6; i++) setTimeout(() => burst(cp.clone().add(new THREE.Vector3(rand(-4, 4), rand(2, 5), rand(-4, 4)))), i * 200);
         }, 900);
       }
